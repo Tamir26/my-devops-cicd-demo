@@ -11,6 +11,7 @@ env:
     AWS_ACCOUNT_ID: ${{vars.AWS_ACCOUNT_ID}}
     ECR_REPOSITORY: ${{vars.ECR_REPOSITORY}}
     ECR_REGISTRY: ${{ vars.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
+
 jobs:
     version-bump:
         runs-on: ubuntu-latest
@@ -38,7 +39,7 @@ jobs:
             - name: Update VERSION file
               id: bump
               run: |
-                CURRENT=$(cat VERSION)
+                CURRENT=$(cat VERSION.txt)
                 echo "Current version: $CURRENT"
                 bump=${{ steps.bump_type.outputs.bump }}
 
@@ -49,12 +50,12 @@ jobs:
                 patch) PATCH=$((PATCH+1));;
                 esac
                 NEW_VERSION="$MAJOR.$MINOR.$PATCH"
-                echo "$NEW_VERSION" > VERSION
+                echo "$NEW_VERSION" > VERSION.txt
                 echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
 
                 git config user.name "github-actions[bot]"
                 git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-                git add VERSION
+                git add VERSION.txt
                 git commit -m "chore: bump version to $NEW_VERSION [skip ci]"
                 git push
 
@@ -100,31 +101,29 @@ jobs:
         runs-on: ubuntu-latest
         needs: ["build", "version-bump"]
         env: 
-            VERSION: ${{ needs.version-bump.outputs.version }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          ECR_REGISTRY: ${{ env.ECR_REGISTRY }}
+          VERSION: ${{ needs.version-bump.outputs.version }}
         steps:
-            - name: Deploy to EC2 via SSH
-              uses: appleboy/ssh-action@v1.0.0
-              with:
-                host: ${{ secrets.EC2_HOST }}
-                username: ${{ secrets.EC2_USER }}
-                key: ${{ secrets.EC2_SSH_KEY }}
-                script: |
-                    echo "Connecting to EC2 and pulling image..."
+        - name: Deploy to EC2 via SSH
+          uses: appleboy/ssh-action@v0.1.8
+          with:
+            host: ${{ secrets.EC2_PUBLIC_IP }}
+            username: ec2-user
+            key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+            script: |
+                echo "Pulling Docker image version ${{ env.VERSION }}"
+                docker pull ${{ env.ECR_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.VERSION }}
 
+                echo "Stopping existing container (if any)..."
+                docker stop hello-container || true
+                docker rm hello-container || true
 
-                    echo "Authenticating Docker to ECR using IAM role..."
-                    aws ecr get-login-password --region ${{ env.AWS_REGION }} \
-                    | docker login --username AWS --password-stdin ${{ env.ECR_REGISTRY }}
-
-
-                    echo "Pulling image: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.VERSION }}"
-                    docker pull ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.VERSION }}
-
-
-                    echo "Restarting container"
-                    docker stop app || true && docker rm app || true
-                    docker run -d --name app -p 80:80 \
-                    ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.VERSION }}
+                echo "Running new container..."
+                docker run -d --name hello-container -p 80:80 ${{ env.ECR_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.VERSION }}
+          env:
+            AWS_REGION: ${{ secrets.AWS_REGION }}
+            ECR_REGISTRY: ${{ env.ECR_REGISTRY }}
 
 
     
