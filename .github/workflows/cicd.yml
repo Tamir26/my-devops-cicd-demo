@@ -1,0 +1,25 @@
+name: CI/CD 
+
+
+on:
+    push:
+        branches: ["main"]
+env:
+    AWS_REGION = ${{secrets.AWS_REGION}}
+    AWS_ACCOUNT_ID =${{vars.AWS_ACCOUNT_ID}}
+    ECR_REGISTRY= ${{ vars.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
+jobs:
+    version-bump:
+        runs-on: ubuntu-latest
+        steps:
+            
+            
+    build:
+        runs-on: ubuntu-latest
+        needs: version-bump
+    deploy:
+        runs-on: ubuntu-latest
+        needs: build
+
+
+    
