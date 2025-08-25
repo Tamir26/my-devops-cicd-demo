@@ -104,7 +104,6 @@ jobs:
         needs: ["build", "version-bump"]
         env: 
           AWS_REGION: ${{ secrets.AWS_REGION }}
-          ECR_REGISTRY: ${{ env.ECR_REGISTRY }}
           VERSION: ${{ needs.version-bump.outputs.version }}
         steps:
         - name: Deploy to EC2 via SSH
