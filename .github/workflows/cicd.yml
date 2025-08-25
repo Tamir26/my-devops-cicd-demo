@@ -4,6 +4,8 @@ name: CI/CD
 on:
     push:
         branches: ["main"]
+    workflow_dispatch:
+
 permissions:
     contents: write
 env:
@@ -70,7 +72,7 @@ jobs:
         env: 
             VERSION: ${{ needs.version-bump.outputs.version }}
         steps:
-            - name: Checkput Code
+            - name: Checkout Code
               uses: actions/checkout@v4
 
             - name: Configure AWS credentials
