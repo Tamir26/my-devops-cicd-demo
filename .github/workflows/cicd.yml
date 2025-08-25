@@ -5,21 +5,124 @@ on:
     push:
         branches: ["main"]
 env:
-    AWS_REGION = ${{secrets.AWS_REGION}}
-    AWS_ACCOUNT_ID =${{vars.AWS_ACCOUNT_ID}}
-    ECR_REGISTRY= ${{ vars.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
+    AWS_REGION: ${{secrets.AWS_REGION}}
+    AWS_ACCOUNT_ID: ${{vars.AWS_ACCOUNT_ID}}
+    ECR_REPOSITORY: ${{vars.ECR_REPOSITORY}}
+    ECR_REGISTRY: ${{ vars.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
 jobs:
     version-bump:
         runs-on: ubuntu-latest
+        outputs: 
+            version: ${{ steps.bump.outputs.version }}
         steps:
+            - name: Checkout Code
+              uses : actions/checkout@v4
+              with:
+                fetch-depth: 0
+            
+            - name: Determine version bump type
+              id: bump_type
+              run: |
+                COMMIT_MSG=$(git log -1 --pretty=%B)
+                echo "Last commit message: $COMMIT_MSG"
+
+                bump="patch"
+                if echo "$COMMIT_MSG" | grep -q "BREAKING CHANGE"; then bump="major"; fi
+                if echo "$COMMIT_MSG" | grep -Eiq '^feat(\(|:)?'; then bump="minor"; fi
+                if echo "$COMMIT_MSG" | grep -Eiq '^fix(\(|:)?'; then bump="patch"; fi
+
+                echo "bump=$bump" >> $GITHUB_OUTPUT
+
+            - name: Update VERSION file
+              id: bump
+              run: |
+                CURRENT=$(cat VERSION)
+                echo "Current version: $CURRENT"
+                bump=${{ steps.bump_type.outputs.bump }}
+
+                IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+                case "$bump" in
+                major) MAJOR=$((MAJOR+1)); MINOR=0; PATCH=0;;
+                minor) MINOR=$((MINOR+1)); PATCH=0;;
+                patch) PATCH=$((PATCH+1));;
+                esac
+                NEW_VERSION="$MAJOR.$MINOR.$PATCH"
+                echo "$NEW_VERSION" > VERSION
+                echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+
+                git config user.name "github-actions[bot]"
+                git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+                git add VERSION
+                git commit -m "chore: bump version to $NEW_VERSION [skip ci]"
+                git push
+
+            - name: Show new version
+              run: echo "Version bumped to ${{ steps.bump.outputs.version }}"
+
             
             
     build:
         runs-on: ubuntu-latest
         needs: version-bump
+        env: 
+            VERSION: ${{ needs.version-bump.outputs.version }}
+        steps:
+            - name: Checkput Code
+              uses: actions/checkout@v4
+
+            - name: Configure AWS credentials
+              uses: aws-actions/configure-aws-credentials@v4
+              with:
+                aws-region: ${{env.AWS_REGION}}
+                aws-access-key-id: ${{secrets.AWS_ACCESS_KEY_ID}}
+                aws-secret-access-key: ${{secrets.AWS_SECRET_ACCESS_KEY}}
+
+            - name: Login to Amazon ECR
+              uses: docker/login-action@v3
+              with:
+                registry: ${{env.ECR_REGISTRY}}
+
+            - name: Build and push Docker image to ECR
+              uses: docker/build-push-action@v5
+              with:
+                context: .
+                push: true
+                tags: |
+                    ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.VERSION }}
+                    ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.VERSION }}-${{ github.sha }}
+                    ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:latest
+                cache-from: type=gha
+                cache-to: type=gha,mode=max
+
     deploy:
         runs-on: ubuntu-latest
         needs: build
+        env: 
+            VERSION: ${{ needs.version-bump.outputs.version }}
+        steps:
+            - name: Deploy to EC2 via SSH
+              uses: appleboy/ssh-action@v1.0.0
+              with:
+                host: ${{ secrets.EC2_HOST }}
+                username: ${{ secrets.EC2_USER }}
+                key: ${{ secrets.EC2_SSH_KEY }}
+                script: |
+                    echo "Connecting to EC2 and pulling image..."
+
+
+                    echo "Authenticating Docker to ECR using IAM role..."
+                    aws ecr get-login-password --region ${{ env.AWS_REGION }} \
+                    | docker login --username AWS --password-stdin ${{ env.ECR_REGISTRY }}
+
+
+                    echo "Pulling image: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.VERSION }}"
+                    docker pull ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.VERSION }}
+
+
+                    echo "Restarting container"
+                    docker stop app || true && docker rm app || true
+                    docker run -d --name app -p 80:80 \
+                    ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.VERSION }}
 
 
     
